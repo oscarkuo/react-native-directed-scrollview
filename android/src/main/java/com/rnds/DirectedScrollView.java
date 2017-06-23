@@ -3,10 +3,13 @@ package com.rnds;
 import android.animation.ObjectAnimator;
 import android.content.Context;
 import android.graphics.Matrix;
+import android.support.v4.view.MotionEventCompat;
 import android.support.v4.view.animation.FastOutLinearInInterpolator;
+import android.util.Log;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ScaleGestureDetector;
+import android.view.ViewConfiguration;
 import android.view.animation.Interpolator;
 
 import com.facebook.react.uimanager.PixelUtil;
@@ -38,6 +41,7 @@ public class DirectedScrollView extends ReactViewGroup {
   private float scaleFactor = 1.0f;
   private boolean isScaleInProgress;
   private boolean isScrollInProgress;
+  private int touchSlop;
 
   private ScaleGestureDetector scaleDetector;
 
@@ -45,6 +49,9 @@ public class DirectedScrollView extends ReactViewGroup {
     super(context);
 
     initGestureListeners(context);
+
+    ViewConfiguration vc = ViewConfiguration.get(context);
+    touchSlop = vc.getScaledTouchSlop();
   }
 
   @Override
@@ -56,9 +63,46 @@ public class DirectedScrollView extends ReactViewGroup {
 
   @Override
   public boolean onInterceptTouchEvent(final MotionEvent motionEvent) {
-    ReactScrollViewHelper.emitScrollBeginDragEvent(this);
-    
-    return true;
+    final int action = MotionEventCompat.getActionMasked(motionEvent);
+
+    // Always handle the case of the touch gesture being complete.
+    if (action == MotionEvent.ACTION_CANCEL || action == MotionEvent.ACTION_UP) {
+      // Release the scroll.
+      ReactScrollViewHelper.emitScrollEndDragEvent(this);
+      isScrollInProgress = false;
+      return false; // Do not intercept touch event, let the child handle it
+    }
+
+    switch (action) {
+      case MotionEvent.ACTION_POINTER_DOWN:
+        return true;
+      case MotionEvent.ACTION_DOWN:
+        startTouchX = motionEvent.getX();
+        startTouchY = motionEvent.getY();
+        startScrollX = scrollX;
+        startScrollY = scrollY;
+        return false;
+      case MotionEvent.ACTION_MOVE: {
+        if (isScrollInProgress) {
+          // We're currently scrolling, so yes, intercept the touch event
+          return true;
+        }
+
+        // If the user has dragged her finger horizontally more than touch slop, start the scroll
+        float deltaX = motionEvent.getX() - startTouchX;
+        float deltaY = motionEvent.getY() - startTouchY;
+
+        if (Math.abs(deltaX) > touchSlop || Math.abs(deltaY) > touchSlop) {
+          // Start scrolling
+          isScrollInProgress = true;
+          ReactScrollViewHelper.emitScrollBeginDragEvent(this);
+          return true;
+        }
+        break;
+      }
+    }
+
+    return false;
   }
 
   private void initGestureListeners(Context context) {
@@ -92,14 +136,11 @@ public class DirectedScrollView extends ReactViewGroup {
 
       @Override
       public boolean onScaleBegin(ScaleGestureDetector detector) {
-        if (isScrollInProgress) {
-          return false;
-        }
-
         float x = detector.getFocusX();
         float y = detector.getFocusY();
         pivotChildren(x, y);
         updateChildren();
+
         return true;
       }
 
@@ -139,11 +180,9 @@ public class DirectedScrollView extends ReactViewGroup {
   }
 
   private void onActionMove(MotionEvent motionEvent) {
-    NativeGestureUtil.notifyNativeGestureStarted(this, motionEvent);
-    
     if (isScaleInProgress) return;
 
-    isScrollInProgress = true;
+    NativeGestureUtil.notifyNativeGestureStarted(this, motionEvent);
 
     float deltaX = motionEvent.getX() - startTouchX;
     float deltaY = motionEvent.getY() - startTouchY;
@@ -161,11 +200,6 @@ public class DirectedScrollView extends ReactViewGroup {
   }
 
   private void onActionUp() {
-    if (isScrollInProgress) {
-      ReactScrollViewHelper.emitScrollEndDragEvent(this);
-      isScrollInProgress = false;
-    }
-
     if (bouncesZoom) {
       clampAndScaleChildren(true);
     }
