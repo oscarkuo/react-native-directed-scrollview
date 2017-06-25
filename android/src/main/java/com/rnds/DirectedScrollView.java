@@ -67,9 +67,6 @@ public class DirectedScrollView extends ReactViewGroup {
 
     // Always handle the case of the touch gesture being complete.
     if (action == MotionEvent.ACTION_CANCEL || action == MotionEvent.ACTION_UP) {
-      // Release the scroll.
-      ReactScrollViewHelper.emitScrollEndDragEvent(this);
-      isScrollInProgress = false;
       return false; // Do not intercept touch event, let the child handle it
     }
 
@@ -209,6 +206,8 @@ public class DirectedScrollView extends ReactViewGroup {
     }
 
     isScaleInProgress = false;
+    isScrollInProgress = false;
+    ReactScrollViewHelper.emitScrollEndDragEvent(this);
   }
 
   private void clampAndTranslateChildren(boolean animated) {
