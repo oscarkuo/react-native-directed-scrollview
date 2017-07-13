@@ -2,11 +2,14 @@ package com.rnds;
 
 import android.animation.ObjectAnimator;
 import android.content.Context;
+import android.graphics.Matrix;
+import android.support.v4.view.MotionEventCompat;
 import android.support.v4.view.animation.FastOutLinearInInterpolator;
+import android.util.Log;
 import android.view.MotionEvent;
 import android.view.View;
-import android.view.ViewGroup;
 import android.view.ScaleGestureDetector;
+import android.view.ViewConfiguration;
 import android.view.animation.Interpolator;
 
 import com.facebook.react.uimanager.PixelUtil;
@@ -27,6 +30,8 @@ public class DirectedScrollView extends ReactViewGroup {
   private boolean bounces = true;
   private boolean bouncesZoom = true;
 
+  private float pivotX;
+  private float pivotY;
   private float scrollX;
   private float scrollY;
   private float startScrollX;
@@ -36,6 +41,7 @@ public class DirectedScrollView extends ReactViewGroup {
   private float scaleFactor = 1.0f;
   private boolean isScaleInProgress;
   private boolean isScrollInProgress;
+  private int touchSlop;
 
   private ScaleGestureDetector scaleDetector;
 
@@ -43,6 +49,9 @@ public class DirectedScrollView extends ReactViewGroup {
     super(context);
 
     initGestureListeners(context);
+
+    ViewConfiguration vc = ViewConfiguration.get(context);
+    touchSlop = vc.getScaledTouchSlop();
   }
 
   @Override
@@ -54,9 +63,43 @@ public class DirectedScrollView extends ReactViewGroup {
 
   @Override
   public boolean onInterceptTouchEvent(final MotionEvent motionEvent) {
-    ReactScrollViewHelper.emitScrollBeginDragEvent(this);
-    
-    return true;
+    final int action = MotionEventCompat.getActionMasked(motionEvent);
+
+    // Always handle the case of the touch gesture being complete.
+    if (action == MotionEvent.ACTION_CANCEL || action == MotionEvent.ACTION_UP) {
+      return false; // Do not intercept touch event, let the child handle it
+    }
+
+    switch (action) {
+      case MotionEvent.ACTION_POINTER_DOWN:
+        return true;
+      case MotionEvent.ACTION_DOWN:
+        startTouchX = motionEvent.getX();
+        startTouchY = motionEvent.getY();
+        startScrollX = scrollX;
+        startScrollY = scrollY;
+        return false;
+      case MotionEvent.ACTION_MOVE: {
+        if (isScrollInProgress) {
+          // We're currently scrolling, so yes, intercept the touch event
+          return true;
+        }
+
+        // If the user has dragged her finger horizontally more than touch slop, start the scroll
+        float deltaX = motionEvent.getX() - startTouchX;
+        float deltaY = motionEvent.getY() - startTouchY;
+
+        if (Math.abs(deltaX) > touchSlop || Math.abs(deltaY) > touchSlop) {
+          // Start scrolling
+          isScrollInProgress = true;
+          ReactScrollViewHelper.emitScrollBeginDragEvent(this);
+          return true;
+        }
+        break;
+      }
+    }
+
+    return false;
   }
 
   private void initGestureListeners(Context context) {
@@ -65,7 +108,6 @@ public class DirectedScrollView extends ReactViewGroup {
 
       @Override
       public boolean onTouch(View view, MotionEvent motionEvent) {
-
         switch (motionEvent.getAction() & MotionEvent.ACTION_MASK) {
           case MotionEvent.ACTION_DOWN:
             onActionDown(motionEvent);
@@ -90,19 +132,35 @@ public class DirectedScrollView extends ReactViewGroup {
     scaleDetector = new ScaleGestureDetector(context, new ScaleGestureDetector.SimpleOnScaleGestureListener() {
 
       @Override
+      public boolean onScaleBegin(ScaleGestureDetector detector) {
+        float x = detector.getFocusX();
+        float y = detector.getFocusY();
+        pivotChildren(x, y);
+        updateChildren();
+
+        return true;
+      }
+
+      @Override
       public boolean onScale(ScaleGestureDetector detector) {
         scaleFactor *= detector.getScaleFactor();
+        updateChildren();
+        return true;
+      }
 
+      private void updateChildren() {
         if (bouncesZoom) {
           scaleChildren(false);
         } else {
           clampAndScaleChildren(false);
-          clampAndTranslateChildren(false);
         }
 
+        if (bounces) {
+          translateChildren(false);
+        } else {
+          clampAndTranslateChildren(false);
+        }
         invalidate();
-
-        return true;
       }
     });
   }
@@ -119,11 +177,9 @@ public class DirectedScrollView extends ReactViewGroup {
   }
 
   private void onActionMove(MotionEvent motionEvent) {
-    NativeGestureUtil.notifyNativeGestureStarted(this, motionEvent);
-    
     if (isScaleInProgress) return;
 
-    isScrollInProgress = true;
+    NativeGestureUtil.notifyNativeGestureStarted(this, motionEvent);
 
     float deltaX = motionEvent.getX() - startTouchX;
     float deltaY = motionEvent.getY() - startTouchY;
@@ -141,33 +197,37 @@ public class DirectedScrollView extends ReactViewGroup {
   }
 
   private void onActionUp() {
-    if (isScrollInProgress) {
-      ReactScrollViewHelper.emitScrollEndDragEvent(this);
-      isScrollInProgress = false;
+    if (bouncesZoom) {
+      clampAndScaleChildren(true);
     }
 
     if (bounces) {
       clampAndTranslateChildren(true);
     }
 
-    if (bouncesZoom) {
-      clampAndScaleChildren(true);
-    }
-
     isScaleInProgress = false;
+    isScrollInProgress = false;
+    ReactScrollViewHelper.emitScrollEndDragEvent(this);
   }
 
   private void clampAndTranslateChildren(boolean animated) {
-    if (getMaxScrollX() > 0) {
-      scrollX = clamp(scrollX, -getMaxScrollX(), 0);
+    // need to use the 0,0 points after scale transforms for min/max
+    float[] minPoints = transformPoints(new float[] { 0, 0 });
+    float minX = minPoints[0];
+    float minY = minPoints[1];
+    float maxX = minPoints[0] + getMaxScrollX();
+    float maxY = minPoints[1] + getMaxScrollY();
+
+    if (maxX > minX) {
+      scrollX = clamp(scrollX, -maxX, -minX);
     } else {
-      scrollX = 0;
+      scrollX = -minX;
     }
 
-    if (getMaxScrollY() > 0) {
-      scrollY = clamp(scrollY, -getMaxScrollY(), 0);
+    if (maxY > minY) {
+      scrollY = clamp(scrollY, -maxY, -minY);
     } else {
-      scrollY = 0;
+      scrollY = -minY;
     }
 
     translateChildren(animated);
@@ -177,6 +237,41 @@ public class DirectedScrollView extends ReactViewGroup {
     scaleFactor = clamp(scaleFactor, minimumZoomScale, maximumZoomScale);
 
     scaleChildren(animated);
+  }
+
+  private void pivotChildren(float newPivotX, float newPivotY) {
+    float oldPivotX = pivotX;
+    float oldPivotY = pivotY;
+    pivotX = newPivotX - scrollX;
+    pivotY = newPivotY - scrollY;
+
+    // changing the  pivot changes the view translation, need to adjust the scroll to compensate
+    // otherwise multiple zooms causes the content to jump
+    // code adapted from https://stackoverflow.com/a/14522916
+    scrollX += (oldPivotX - pivotX) * (1 - scaleFactor);
+    scrollY += (oldPivotY - pivotY) * (1 - scaleFactor);
+
+    List<DirectedScrollViewChild> scrollableChildren = getScrollableChildren();
+    for (DirectedScrollViewChild scrollableChild : scrollableChildren) {
+      if (scrollableChild.getShouldScrollHorizontally()) {
+        scrollableChild.setTranslationX(scrollX);
+        scrollableChild.setPivotX(pivotX);
+      }
+      if (scrollableChild.getShouldScrollVertically()) {
+        scrollableChild.setTranslationY(scrollY);
+        scrollableChild.setPivotY(pivotY);
+      }
+    }
+  }
+
+  private float[] transformPoints(float[] points) {
+    float[] transformedPoints = new float[points.length];
+
+    Matrix matrix = new Matrix();
+    matrix.setScale(scaleFactor, scaleFactor, pivotX, pivotY);
+    matrix.mapPoints(transformedPoints, points);
+
+    return transformedPoints;
   }
 
   private void scaleChildren(boolean animated) {
@@ -245,21 +340,17 @@ public class DirectedScrollView extends ReactViewGroup {
     return getChildAt(0).getHeight() * scaleFactor;
   }
 
-  private float getMaxScrollX() {
-    return getContentContainerWidth() - getWidth();
-  }
+  private float getMaxScrollX() { return getContentContainerWidth() - getWidth(); }
 
   private float getMaxScrollY() {
     return getContentContainerHeight() - getHeight();
   }
 
   private ArrayList<DirectedScrollViewChild> getScrollableChildren() {
-    ViewGroup contentContainer = (ViewGroup)getChildAt(0);
-
     ArrayList<DirectedScrollViewChild> scrollableChildren = new ArrayList<>();
 
-    for (int i = 0; i < contentContainer.getChildCount(); i++) {
-      View childView = contentContainer.getChildAt(i);
+    for (int i = 0; i < getChildCount(); i++) {
+      View childView = getChildAt(i);
 
       if (childView instanceof DirectedScrollViewChild) {
         scrollableChildren.add((DirectedScrollViewChild) childView);
