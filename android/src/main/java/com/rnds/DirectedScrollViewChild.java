@@ -15,6 +15,7 @@ public class DirectedScrollViewChild extends ReactViewGroup {
 
   public DirectedScrollViewChild(Context context) {
     super(context);
+    setEnabled(false);
   }
 
   public boolean getShouldScrollHorizontally() {
